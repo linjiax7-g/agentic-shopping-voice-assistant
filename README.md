@@ -1,1 +1,1 @@
-# shopping-agentic-voice-assistant
+# agentic-shopping-voice-assistant
