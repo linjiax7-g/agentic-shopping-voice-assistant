@@ -2,7 +2,8 @@
 from graph.state import GraphState
 from graph.router import get_router_chain
 from graph.planner import get_planner_chain
-from graph.retriever import retrieve_products
+from graph.retriever.rag import retrieve_from_rag
+from graph.retriever.web import retrieve_from_web
 from graph.answerer import get_answerer_chain
 import logging
 
@@ -93,7 +94,7 @@ def planner_node(state: GraphState) -> GraphState:
     
     return state
 
-def retriever_node(state: GraphState) -> GraphState:
+def rag_retriever_node(state: GraphState) -> GraphState:
     """Retrieve products from private RAG using plan filters"""
     
     try:
@@ -102,24 +103,18 @@ def retriever_node(state: GraphState) -> GraphState:
         
         # Extract retrieval parameters from plan
         filters = plan.get("filters", {})
-        retrieval_fields = plan.get("retrieval_fields", [])
         
-        logger.info(f"Retrieving with filters: {filters}")
+        logger.info(f"Retrieving from private database with filters: {filters}")
         
         # Retrieve documents
-        docs = retrieve_products(
-            query=query,
-            filters=filters,
-            retrieval_fields=retrieval_fields,
-            k=5
-        )
+        docs = retrieve_from_rag(query=query, filters=filters, k=5)
         
         # Update state
         state["retrieved_docs"] = docs
         
         # Log
         state["step_log"].append({
-            "node": "retriever",
+            "node": "rag_retriever",
             "input": {"query": query, "filters": filters},
             "output": {
                 "num_docs": len(docs),
@@ -132,7 +127,7 @@ def retriever_node(state: GraphState) -> GraphState:
         })
         
     except Exception as e:
-        logger.error(f"Retriever error: {e}", exc_info=True)
+        logger.error(f"RAG Retriever error: {e}", exc_info=True)
         state["retrieved_docs"] = []
         state["step_log"].append({
             "node": "retriever",
@@ -141,6 +136,87 @@ def retriever_node(state: GraphState) -> GraphState:
         })
     
     return state
+
+
+def web_retriever_node(state: GraphState) -> GraphState:
+    """V2: Web-only retriever"""
+    try:
+        plan = state["plan"]
+        query = state["query"]
+        filters = plan.get("filters", {})
+        
+        logger.info(f"[Web Node] Retrieving from web search")
+        
+        docs = retrieve_from_web(query, filters, k=5)
+        state["retrieved_docs"] = docs
+        
+        state["step_log"].append({
+            "node": "web_retriever",
+            "input": {"query": query, "filters": filters},
+            "output": {
+                "num_docs": len(docs),
+                "source": "web",
+                "top_results": [
+                    {"title": d["title"], "price": d["price"]} 
+                    for d in docs[:3]
+                ]
+            },
+            "success": True
+        })
+        
+    except Exception as e:
+        logger.error(f"Web Retriever error: {e}", exc_info=True)
+        state["retrieved_docs"] = []
+        state["step_log"].append({
+            "node": "web_retriever",
+            "error": str(e),
+            "success": False
+        })
+    
+    return state
+
+
+def hybrid_retriever_node(state: GraphState) -> GraphState:
+    """V2: Hybrid retriever (RAG + Web)"""
+    try:
+        plan = state["plan"]
+        query = state["query"]
+        filters = plan.get("filters", {})
+        
+        logger.info(f"[Hybrid Node] Retrieving from both RAG and Web")
+        
+        rag_docs = retrieve_from_rag(query, filters, k=3)
+        web_docs = retrieve_from_web(query, filters, k=2)
+        
+        all_docs = rag_docs + web_docs
+        state["retrieved_docs"] = all_docs
+        
+        state["step_log"].append({
+            "node": "hybrid_retriever",
+            "input": {"query": query, "filters": filters},
+            "output": {
+                "num_docs": len(all_docs),
+                "rag_docs": len(rag_docs),
+                "web_docs": len(web_docs),
+                "top_results": [
+                    {"title": d["title"], "price": d["price"], "source": d["source"]} 
+                    for d in all_docs[:5]
+                ]
+            },
+            "success": True
+        })
+        
+    except Exception as e:
+        logger.error(f"Hybrid Retriever error: {e}", exc_info=True)
+        state["retrieved_docs"] = []
+        state["step_log"].append({
+            "node": "hybrid_retriever",
+            "error": str(e),
+            "success": False
+        })
+    
+    return state
+
 
 def answerer_node(state: GraphState) -> GraphState:
     """Synthesize final answer from retrieved documents"""

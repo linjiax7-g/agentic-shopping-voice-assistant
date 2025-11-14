@@ -1,127 +1,35 @@
 # graph/retriever/__init__.py
-from langchain_chroma import Chroma
-from langchain_huggingface import HuggingFaceEmbeddings
+"""
+Unified retriever interface
+Maintains backward compatibility with v1
+"""
+
+from graph.retriever.rag import retrieve_from_rag, get_vector_store
+from graph.retriever.web import retrieve_from_web
 from typing import List, Dict
 import logging
 
 logger = logging.getLogger(__name__)
 
-_vector_store = None
-
-def get_vector_store(persist_directory: str = "./chroma_db"):
-    """Get or create vector store (singleton)"""
-    global _vector_store
-    
-    if _vector_store is None:
-        embedder = HuggingFaceEmbeddings(
-            model_name="sentence-transformers/all-MiniLM-L6-v2"
-        )
-        _vector_store = Chroma(
-            persist_directory=persist_directory,
-            embedding_function=embedder
-        )
-    
-    return _vector_store
+# Re-export for backward compatibility
+__all__ = ['retrieve_products', 'retrieve_from_rag', 'retrieve_from_web', 'get_vector_store']
 
 
 def retrieve_products(
     query: str,
     filters: Dict,
-    retrieval_fields: List[str],
     k: int = 5
 ) -> List[Dict]:
     """
-    Retrieve products from Chroma with metadata filtering
+    Original unified retriever (for v1 compatibility)
+    Just calls RAG retriever
     
     Args:
         query: Search query text
         filters: Dict with category, min_price, max_price, brand, material
-        retrieval_fields: Fields to include (not used with current Chroma setup)
         k: Number of results
+    
+    Returns:
+        List of product dicts
     """
-    vector_store = get_vector_store()
-    
-    # Get more results for post-filtering
-    results = vector_store.similarity_search_with_score(
-        query=query,
-        k=k * 3
-    )
-    
-    logger.info(f"Retrieved {len(results)} candidates before filtering")
-    
-    # Post-process filtering
-    filtered_results = []
-    for doc, score in results:
-        metadata = doc.metadata
-        
-        if not _matches_filters(metadata, filters):
-            continue
-        
-        # Build result dict
-        result = {
-            "doc_id": metadata.get("Uniq Id"),
-            "title": metadata.get("Product Name"),
-            "price": _parse_price(metadata.get("Selling Price")),
-            "category": metadata.get("category", ""),
-            "brand": metadata.get("brand", ""),
-            "material": metadata.get("material", ""),
-            "content": doc.page_content,
-            "score": float(score)
-        }
-        
-        filtered_results.append(result)
-        
-        if len(filtered_results) >= k:
-            break
-    
-    logger.info(f"Returned {len(filtered_results)} products after filtering")
-    
-    return filtered_results
-
-
-def _parse_price(price_str) -> float:
-    """Parse price string to float"""
-    try:
-        # Handle "₹1,234" or "$12.34" formats
-        price_str = str(price_str).replace(',', '').replace('₹', '').replace('$', '')
-        return float(price_str)
-    except (ValueError, TypeError):
-        return 0.0
-
-
-def _matches_filters(metadata: Dict, filters: Dict) -> bool:
-    """Check if document matches filter criteria"""
-    
-    # Category filter
-    if "category" in filters and filters["category"]:
-        doc_category = str(metadata.get("category", "")).lower()
-        filter_category = str(filters["category"]).lower()
-        if filter_category not in doc_category and doc_category != filter_category:
-            return False
-    
-    # Price filtering
-    price = _parse_price(metadata.get("Selling Price", 0))
-    
-    if "min_price" in filters:
-        if price < filters["min_price"]:
-            return False
-    
-    if "max_price" in filters:
-        if price > filters["max_price"]:
-            return False
-    
-    # Brand filtering
-    if "brand" in filters and filters["brand"]:
-        doc_brand = str(metadata.get("brand", "")).lower()
-        filter_brands = [b.lower() for b in filters["brand"]]
-        if not any(fb in doc_brand for fb in filter_brands):
-            return False
-    
-    # Material filtering
-    if "material" in filters and filters["material"]:
-        doc_material = str(metadata.get("material", "")).lower()
-        filter_material = str(filters["material"]).lower()
-        if filter_material not in doc_material:
-            return False
-    
-    return True
+    return retrieve_from_rag(query, filters, k)
