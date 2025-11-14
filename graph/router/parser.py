@@ -31,7 +31,7 @@ class RouterOutput(BaseModel):
     def validate_safety_flags(cls, v):
         return [flag for flag in v if flag in VALID_SAFETY_FLAGS]
 
-def extract_json_from_text(text: str) -> Optional[dict]:
+def extract_json_from_router_output(text: str) -> Optional[dict]:
     """Extract JSON from potentially messy output."""
     
     # Clean up common prefixes
@@ -69,7 +69,7 @@ parser = PydanticOutputParser(pydantic_object=RouterOutput)
 
 def parse_router_output(text: str) -> RouterOutput:
     """Parse LLM output with fallback."""
-    data = extract_json_from_text(text)
+    data = extract_json_from_router_output(text)
     logger.debug(f"🔍 Extracted JSON: {data}")
     
     if data is None:

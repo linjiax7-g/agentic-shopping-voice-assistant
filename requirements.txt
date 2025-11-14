@@ -1,0 +1,47 @@
+# Python dependencies for Agentic Voice Assistant
+
+## Core Framework
+langgraph>=0.2.0
+langchain>=0.3.0
+langchain-openai>=0.2.0  # or langchain-anthropic, langchain-google-genai
+langchain-community>=0.3.0
+langchain-huggingface>=0.0.1
+
+## MCP (Model Context Protocol)
+mcp>=0.9.0
+
+## Speech Processing
+openai-whisper>=20231117  # ASR
+openai>=1.0.0  # For TTS (or use elevenlabs, azure-cognitiveservices-speech)
+
+
+## Data Processing
+pandas>=2.0.0
+pyarrow>=14.0.0  # For parquet files
+numpy>=1.24.0
+
+## Web Search APIs
+requests>=2.31.0
+# Add specific API clients:
+# serper>=1.0.0  # For Serper API
+# or brave-search>=0.1.0  # For Brave Search
+
+## UI
+streamlit>=1.28.0
+# Note: Using Streamlit's built-in st.file_uploader for audio input
+# For browser-based recording, consider: streamlit-audio-recorder (if available) or use st.audio with file upload
+
+## Audio Processing
+pydub>=0.25.1
+soundfile>=0.12.1
+
+## Utilities
+python-dotenv>=1.0.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+
+## Development
+pytest>=7.4.0
+black>=23.0.0
+ruff>=0.1.0
+

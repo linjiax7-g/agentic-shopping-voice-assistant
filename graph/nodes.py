@@ -1,35 +1,17 @@
 # graph/nodes.py
 from graph.state import GraphState
-from graph.router.model import load_router_model
-from graph.router.prompts import router_prompt
-from graph.router.parser import parse_router_output
-from langchain_core.runnables import RunnablePassthrough
+from graph.router import get_router_chain
+from graph.planner import get_planner_chain
+import json
 import logging
 logger = logging.getLogger(__name__)
-
-# Not loaded when the file is imported
-_llm = None  
-_router_chain = None  
-
-def get_router_chain():
-    """Get router chain, loading model lazily if needed."""
-    global _llm, _router_chain
-    if _router_chain is None:   # Only load when first called
-        _llm = load_router_model()  # Loads model only when needed
-        _router_chain = (
-            {"query": RunnablePassthrough()}
-            | router_prompt
-            | _llm
-            | parse_router_output
-        )
-    return _router_chain
 
 def router_node(state: GraphState) -> GraphState:
     """Extract task, constraints, and safety flags using LangChain + HuggingFace."""
     
     query = state["query"]
-    
     try:
+        # Use the chain
         router_chain = get_router_chain()
         result = router_chain.invoke(query)
         
@@ -59,6 +41,60 @@ def router_node(state: GraphState) -> GraphState:
         state["safety_flags"] = []
         state["step_log"].append({
             "node": "router",
+            "error": str(e),
+            "success": False
+        })
+    
+    return state
+
+def planner_node(state: GraphState) -> GraphState:
+    """
+    Create a retrieval plan based on task and constraints.
+    Uses rule-based logic for speed and reliability.
+    """
+    
+    task = state["task"]
+    constraints = state["constraints"]
+    query = state["query"]
+    
+    try:
+        # Use the chain
+        planner_chain = get_planner_chain()
+        
+        # Prepare input for chain
+        chain_input = {
+            "query": state["query"],
+            "task": state["task"],
+            "constraints": state["constraints"]
+        }
+        
+        # Invoke chain
+        plan = planner_chain.invoke(chain_input)
+        
+        # Update state
+        state["plan"] = plan
+        
+        # Log
+        state["step_log"].append({
+            "node": "planner",
+            "input": {
+                "task": task,
+                "constraints": constraints
+            },
+            "output": plan,
+            "success": True
+        })
+        
+    except Exception as e:
+        # Fallback plan
+        state["plan"] = {
+            "sources": ["private_rag"],
+            "retrieval_fields": ["title", "price", "rating"],
+            "comparison_criteria": ["price"],
+            "filters": {}
+        }
+        state["step_log"].append({
+            "node": "planner",
             "error": str(e),
             "success": False
         })

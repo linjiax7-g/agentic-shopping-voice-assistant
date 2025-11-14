@@ -13,7 +13,7 @@ class GraphState(TypedDict):
     safety_flags: List[str]  # Filtered to valid flags only
     
     # Planner outputs
-    plan: dict
+    plan: dict # Contains: sources, retrieval_fields, comparison_criteria, filters
     
     # Retriever outputs
     retrieved_docs: List[dict]

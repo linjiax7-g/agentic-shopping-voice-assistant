@@ -2,10 +2,14 @@
 from langchain_huggingface import HuggingFacePipeline
 from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline, BitsAndBytesConfig
 import torch
+import gc
 import logging
 logger = logging.getLogger(__name__)
 
-def load_router_model():
+# Global instance
+_llm = None
+
+def load_llm_qwen_model():
     """Load Qwen3-4B-Instruct (July 2025 release)."""
     
     model_id = "Qwen/Qwen3-4B-Instruct-2507"
@@ -45,3 +49,29 @@ def load_router_model():
     logger.info("Model loaded successfully")
     
     return llm
+
+def get_llm():
+    """
+    Get the LLM instance (lazy loading singleton).
+    Same model is reused across all nodes.
+    
+    Args:
+        model_id: HuggingFace model identifier (only used on first call)
+    
+    Returns:
+        HuggingFacePipeline instance
+    """
+    global _llm
+    
+    if _llm is None:
+        _llm = load_llm_qwen_model()
+    
+    return _llm
+
+def reset_llm():
+    """Reset the LLM instance (useful for testing or switching models)."""
+    global _llm
+    _llm = None
+    gc.collect()
+    if torch.backends.mps.is_available():
+        torch.mps.empty_cache()
