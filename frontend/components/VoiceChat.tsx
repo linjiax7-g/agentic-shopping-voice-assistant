@@ -24,6 +24,8 @@ interface Message {
   content: string;
   timestamp: Date;
   isVoiceInput?: boolean;
+  audioUrl?: string;
+  audioDuration?: number;
   metadata?: AgentMetadata;
 }
 
@@ -81,6 +83,7 @@ export default function VoiceChat() {
   
   // Playback state
   const [playingMessageId, setPlayingMessageId] = useState<string | null>(null);
+  const [playbackProgress, setPlaybackProgress] = useState(0);
   const [isAgentResponding, setIsAgentResponding] = useState(false);
   
   // Status
@@ -96,6 +99,9 @@ export default function VoiceChat() {
   const audioStreamRef = useRef<MediaStream | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const isRecordingRef = useRef<boolean>(false);
+  const latestAudioUrlRef = useRef<string | null>(null);
+  const latestAudioDurationRef = useRef<number | null>(null);
+  const recordingStartTimeRef = useRef<number | null>(null);
   
   // API base URL
   const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -287,8 +293,15 @@ export default function VoiceChat() {
             role: "user",
             content: data.text,
             timestamp: new Date(),
-            isVoiceInput: true
+            isVoiceInput: true,
+            audioUrl: latestAudioUrlRef.current || undefined,
+            audioDuration: latestAudioDurationRef.current || undefined
           };
+          
+          // Clear the refs after using them
+          latestAudioUrlRef.current = null;
+          latestAudioDurationRef.current = null;
+          
           setMessages((prev) => [...prev, userMessage]);
           setRealtimeTranscript("");
           
@@ -333,6 +346,32 @@ export default function VoiceChat() {
       });
       
       audioStreamRef.current = stream;
+      
+      // Setup MediaRecorder for local playback
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+      recordingStartTimeRef.current = Date.now();
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      mediaRecorder.onstop = () => {
+        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        const audioUrl = URL.createObjectURL(audioBlob);
+        latestAudioUrlRef.current = audioUrl;
+        
+        if (recordingStartTimeRef.current) {
+          const duration = (Date.now() - recordingStartTimeRef.current) / 1000;
+          latestAudioDurationRef.current = Math.round(duration);
+          recordingStartTimeRef.current = null;
+        }
+      };
+
+      mediaRecorder.start();
       
       // Connect WebSocket
       connectWebSocket();
@@ -421,6 +460,11 @@ export default function VoiceChat() {
     setIsRecording(false);
     isRecordingRef.current = false;
     
+    // Stop MediaRecorder
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      mediaRecorderRef.current.stop();
+    }
+    
     // Disconnect AudioContext processor
     if (processorRef.current) {
       processorRef.current.disconnect();
@@ -460,53 +504,18 @@ export default function VoiceChat() {
     }
   };
   
-  // Send text message
-  const sendTextMessage = async () => {
-    if (!input.trim()) return;
-    
-    const userMessage: Message = {
-      id: Date.now().toString(),
-      role: "user",
-      content: input,
-      timestamp: new Date(),
-      isVoiceInput: false
-    };
-    
-    setMessages((prev) => [...prev, userMessage]);
-    setInput("");
-    requestAgentResponse(userMessage.content);
-  };
-  
-  // Play TTS audio for a message
-  const playTTSAudio = async (messageId: string, text: string, role: "user" | "assistant") => {
-    if (playingMessageId === messageId) {
-      // Stop playing
-      if (audioRef.current) {
-        audioRef.current.pause();
-        audioRef.current.currentTime = 0;
-      }
-      setPlayingMessageId(null);
-      setStatus("ready");
-      return;
-    }
-    
+  // Generate TTS for a message
+  const generateTTS = async (text: string, voiceId: string, language: string) => {
     try {
-      setStatus("playing");
-      setPlayingMessageId(messageId);
-      
-      // Get voice settings based on role
-      const settings = role === "user" ? userSettings : agentSettings;
-      
-      // Call TTS API
       const response = await fetch(`${API_BASE_URL}/api/tts`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          text: text,
-          voice_id: settings.voiceId,
-          language: settings.language
+          text,
+          voice_id: voiceId,
+          language
         })
       });
       
@@ -516,7 +525,7 @@ export default function VoiceChat() {
       
       const data = await response.json();
       
-      // Decode base64 audio and play
+      // Decode base64 audio
       const audioData = atob(data.audio_base64);
       const audioArray = new Uint8Array(audioData.length);
       for (let i = 0; i < audioData.length; i++) {
@@ -526,20 +535,136 @@ export default function VoiceChat() {
       const audioBlob = new Blob([audioArray], { type: "audio/mpeg" });
       const audioUrl = URL.createObjectURL(audioBlob);
       
-      const audio = new Audio(audioUrl);
+      return {
+        audioUrl,
+        duration: Math.round(data.duration)
+      };
+    } catch (error) {
+      console.error("Failed to generate TTS:", error);
+      return null;
+    }
+  };
+
+  // Send text message
+  const sendTextMessage = async () => {
+    if (!input.trim()) return;
+    
+    const messageId = Date.now().toString();
+    const userMessage: Message = {
+      id: messageId,
+      role: "user",
+      content: input,
+      timestamp: new Date(),
+      isVoiceInput: false
+    };
+    
+    setMessages((prev) => [...prev, userMessage]);
+    setInput("");
+    requestAgentResponse(userMessage.content);
+
+    // Generate voice for the typed message
+    const ttsResult = await generateTTS(
+      userMessage.content, 
+      userSettings.voiceId, 
+      userSettings.language
+    );
+
+    if (ttsResult) {
+      setMessages(prev => prev.map(msg => {
+        if (msg.id === messageId) {
+          return {
+            ...msg,
+            audioUrl: ttsResult.audioUrl,
+            audioDuration: ttsResult.duration
+          };
+        }
+        return msg;
+      }));
+    }
+  };
+  
+  // Play audio (TTS or local)
+  const playAudio = async (messageId: string, content: string, role: "user" | "assistant", audioUrl?: string) => {
+    if (playingMessageId === messageId) {
+      // Stop playing
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.currentTime = 0;
+      }
+      setPlayingMessageId(null);
+      setPlaybackProgress(0);
+      setStatus("ready");
+      return;
+    }
+    
+    try {
+      setStatus("playing");
+      setPlayingMessageId(messageId);
+      setPlaybackProgress(0);
+      
+      let src = audioUrl;
+
+      // If no local audio URL, fetch TTS
+      if (!src) {
+        // Get voice settings based on role
+        const settings = role === "user" ? userSettings : agentSettings;
+        
+        // Call TTS API
+        const response = await fetch(`${API_BASE_URL}/api/tts`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            text: content,
+            voice_id: settings.voiceId,
+            language: settings.language
+          })
+        });
+        
+        if (!response.ok) {
+          throw new Error("TTS request failed");
+        }
+        
+        const data = await response.json();
+        
+        // Decode base64 audio
+        const audioData = atob(data.audio_base64);
+        const audioArray = new Uint8Array(audioData.length);
+        for (let i = 0; i < audioData.length; i++) {
+          audioArray[i] = audioData.charCodeAt(i);
+        }
+        
+        const audioBlob = new Blob([audioArray], { type: "audio/mpeg" });
+        src = URL.createObjectURL(audioBlob);
+      }
+      
+      const audio = new Audio(src);
       audioRef.current = audio;
       
+      audio.ontimeupdate = () => {
+        if (audio.duration) {
+          const progress = (audio.currentTime / audio.duration) * 100;
+          setPlaybackProgress(progress);
+        }
+      };
+
       audio.onended = () => {
         setPlayingMessageId(null);
+        setPlaybackProgress(0);
         setStatus("ready");
-        URL.revokeObjectURL(audioUrl);
+        // Revoke URL only if it was created here (TTS), not if it's the saved message URL
+        if (!audioUrl && src) {
+          URL.revokeObjectURL(src);
+        }
       };
       
       await audio.play();
       
     } catch (error) {
-      console.error("Failed to play TTS audio:", error);
+      console.error("Failed to play audio:", error);
       setPlayingMessageId(null);
+      setPlaybackProgress(0);
       setStatus("ready");
     }
   };
@@ -654,44 +779,95 @@ export default function VoiceChat() {
                   : "chat-bubble-received"
               )}
             >
-              <div className="flex items-start gap-2">
-                <div className="flex-1 space-y-1">
-                  <p className="text-caption">{message.content}</p>
-                  {message.metadata?.citations && message.metadata.citations.length > 0 && (
-                    <p className="text-[10px] text-foreground-secondary">
-                      Sources: {message.metadata.citations.join(", ")}
-                    </p>
-                  )}
-                  {message.metadata?.retrievedDocs && message.metadata.retrievedDocs.length > 0 && (
-                    <div className="text-[10px] text-foreground-secondary space-y-0.5">
-                      {message.metadata.retrievedDocs.slice(0, 2).map((doc, index) => (
-                        <div key={`${doc.title ?? "doc"}-${index}`}>
-                          {doc.title ?? "Result"}
-                          {doc.price !== undefined && ` • $${doc.price}`}
-                          {doc.source && ` • ${doc.source}`}
+              <div className="flex flex-col min-w-[200px]">
+                {message.audioUrl ? (
+                   <div className="space-y-3">
+                     {!message.isVoiceInput && (
+                       <div className="border-b border-primary-foreground/20 pb-2">
+                          <p className="text-caption leading-relaxed">{message.content}</p>
+                       </div>
+                     )}
+                     
+                     <div className="flex items-center gap-3">
+                        <Button
+                          onClick={() => playAudio(message.id, message.content, message.role, message.audioUrl)}
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 bg-white hover:bg-white/90 text-primary rounded-full shrink-0"
+                          title={playingMessageId === message.id ? "Stop" : "Play audio"}
+                        >
+                          {playingMessageId === message.id ? (
+                            <Pause className="w-4 h-4 fill-current" />
+                          ) : (
+                            <Play className="w-4 h-4 fill-current ml-0.5" />
+                          )}
+                        </Button>
+                        
+                        <div className="flex-1 h-8 flex items-center">
+                          <div className="w-full h-1 bg-primary-foreground/30 rounded-full overflow-hidden">
+                             <div 
+                               className="h-full bg-white transition-all duration-100 ease-linear"
+                               style={{ width: playingMessageId === message.id ? `${playbackProgress}%` : '0%' }}
+                             />
+                          </div>
                         </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-                <div className="flex items-center gap-1">
-                  {message.isVoiceInput && (
-                    <Mic className="w-3 h-3 text-foreground-secondary flex-shrink-0" />
-                  )}
-                  <Button
-                    onClick={() => playTTSAudio(message.id, message.content, message.role)}
-                    variant="ghost"
-                    size="icon"
-                    className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
-                    title="Play audio"
-                  >
-                    {playingMessageId === message.id ? (
-                      <Pause className="w-3 h-3" />
-                    ) : (
-                      <Play className="w-3 h-3" />
+
+                        {message.audioDuration && (
+                          <span className="text-xs font-medium opacity-90 tabular-nums">
+                            {message.audioDuration}"
+                          </span>
+                        )}
+                     </div>
+                     
+                     {message.isVoiceInput && (
+                       <div className="border-t border-primary-foreground/20 pt-2">
+                          <p className="text-caption leading-relaxed">{message.content}</p>
+                       </div>
+                     )}
+                   </div>
+                ) : (
+                  <div className="flex items-start gap-2">
+                  <div className="flex-1 space-y-1">
+                    <p className="text-caption leading-relaxed">{message.content}</p>
+                    {message.metadata?.citations && message.metadata.citations.length > 0 && (
+                      <p className="text-[10px] text-foreground-secondary">
+                        Sources: {message.metadata.citations.join(", ")}
+                      </p>
                     )}
-                  </Button>
+                    {message.metadata?.retrievedDocs && message.metadata.retrievedDocs.length > 0 && (
+                      <div className="text-[10px] text-foreground-secondary space-y-0.5">
+                        {message.metadata.retrievedDocs.slice(0, 2).map((doc, index) => (
+                          <div key={`${doc.title ?? "doc"}-${index}`}>
+                            {doc.title ?? "Result"}
+                            {doc.price !== undefined && ` • $${doc.price}`}
+                            {doc.source && ` • ${doc.source}`}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1">
+                    {!message.isVoiceInput && message.role === "assistant" && (
+                        <Button
+                          onClick={() => playAudio(message.id, message.content, message.role, message.audioUrl)}
+                          variant="ghost"
+                          size="icon"
+                          className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
+                          title={playingMessageId === message.id ? "Stop" : "Play audio"}
+                        >
+                          {playingMessageId === message.id ? (
+                            <Pause className="w-3 h-3" />
+                          ) : (
+                            <Play className="w-3 h-3" />
+                          )}
+                        </Button>
+                    )}
+                    {message.isVoiceInput && !message.audioUrl && (
+                      <Mic className="w-3 h-3 text-foreground-secondary flex-shrink-0" />
+                    )}
+                  </div>
                 </div>
+                )}
               </div>
             </div>
             <span className="text-xs text-foreground-secondary mt-1 px-1">

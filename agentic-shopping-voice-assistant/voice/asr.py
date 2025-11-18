@@ -102,7 +102,10 @@ class WhisperASR:
         segments, info = await asyncio.to_thread(
             self._model.transcribe,
             audio_float,
-            language=lang
+            language=lang,
+            beam_size=5,
+            vad_filter=True,
+            vad_parameters=dict(min_silence_duration_ms=500)
         )
         logger.info(f"Whisper transcription completed")
         
