@@ -1,0 +1,25 @@
+# Voice Assistant Backend Requirements
+
+# FastAPI and server
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6
+
+# WebSocket support
+websockets>=12.0
+
+# ASR (Automatic Speech Recognition)
+faster-whisper>=0.10.0
+numpy>=1.24.0
+
+# Audio processing
+ffmpeg-python>=0.2.0
+
+# TTS (Text-to-Speech)
+elevenlabs>=0.3.0
+aiohttp>=3.9.0
+
+# Logging and utilities
+loguru>=0.7.0
+pydantic>=2.0.0
+
