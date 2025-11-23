@@ -24,6 +24,10 @@ const ShopifyVoiceAssistant = () => {
   const mediaRecorderRef = useRef(null);
   const audioContextRef = useRef(null);
   const analyserRef = useRef(null);
+  const audioRef = useRef(null);
+
+  // ==================== API CONFIGURATION ====================
+  const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
   // ==================== MOCK DATA ====================
   const mockResult = {
@@ -164,7 +168,7 @@ const ShopifyVoiceAssistant = () => {
     }
   };
 
-  const processAudio = () => {
+  const processAudio = async () => {
     setRecordingState('processing');
     setIsProcessing(true);
     setAgentSteps([]);
@@ -183,34 +187,126 @@ const ShopifyVoiceAssistant = () => {
         setCurrentAgentStep(null);
         setIsProcessing(false);
         setRecordingState('idle');
-        setResult(mockResult);
+
+        // Fetch real results from backend API instead of using mock
+        // Default query for testing - in production, this would come from ASR
+        const query = mockResult.query;
+        fetchQueryResults(query);
       }
     };
 
     processStep();
   };
 
-  const playTTS = () => {
+  const playTTS = async () => {
     if (isPlayingTTS) {
+      // Pause/stop audio
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.currentTime = 0;
+      }
       setIsPlayingTTS(false);
       setTtsProgress(0);
     } else {
-      setIsPlayingTTS(true);
-      setTimeout(() => {
-        setTtsProgress(100);
+      // Generate and play TTS
+      try {
+        setIsPlayingTTS(true);
+        setTtsProgress(0);
+
+        // Call TTS API
+        const response = await fetch(`${API_BASE_URL}/api/tts`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            text: result.answer,
+            voice: 'alloy'  // Can make this configurable: alloy, echo, fable, onyx, nova, shimmer
+          })
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(errorData.detail || 'TTS generation failed');
+        }
+
+        const data = await response.json();
+
+        // Create and play audio
+        const audio = new Audio(`${API_BASE_URL}${data.audio_url}`);
+        audioRef.current = audio;
+
+        // Update progress as audio plays
+        audio.ontimeupdate = () => {
+          if (audio.duration) {
+            const progress = (audio.currentTime / audio.duration) * 100;
+            setTtsProgress(progress);
+          }
+        };
+
+        // Handle audio end
+        audio.onended = () => {
+          setIsPlayingTTS(false);
+          setTtsProgress(100);
+          setTimeout(() => setTtsProgress(0), 500);
+        };
+
+        // Handle errors
+        audio.onerror = (e) => {
+          console.error('Audio playback error:', e);
+          setIsPlayingTTS(false);
+          setTtsProgress(0);
+          alert('Failed to play audio. Please try again.');
+        };
+
+        // Start playback
+        await audio.play();
+
+      } catch (error) {
+        console.error('TTS Error:', error);
         setIsPlayingTTS(false);
-      }, 3000);
+        setTtsProgress(0);
+        alert(`Failed to generate speech: ${error.message}`);
+      }
     }
   };
 
-  useEffect(() => {
-    if (isPlayingTTS) {
-      const interval = setInterval(() => {
-        setTtsProgress((prev) => Math.min(prev + 2, 100));
-      }, 30);
-      return () => clearInterval(interval);
+  // ==================== FETCH QUERY RESULTS ====================
+  const fetchQueryResults = async (query) => {
+    try {
+      console.log('Fetching query results from API:', query);
+
+      const response = await fetch(`${API_BASE_URL}/api/query`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || 'Query failed');
+      }
+
+      const data = await response.json();
+
+      // Update result state with API response
+      setResult({
+        query: data.query,
+        answer: data.answer,
+        task: data.task,
+        constraints: data.constraints,
+        products: data.products || [],
+        citations: data.citations || [],
+        stepLog: agentSteps  // Keep frontend visualization steps
+      });
+
+      console.log('Query results fetched successfully:', data);
+
+    } catch (error) {
+      console.error('Query API error:', error);
+      // Fallback to mock result on error
+      setResult(mockResult);
+      alert(`API Error: ${error.message}. Showing mock data instead.`);
     }
-  }, [isPlayingTTS]);
+  };
 
   // ==================== RENDER ====================
   return (
